@@ -110,6 +110,24 @@
   .section-header h2 { font-size: 16px; font-weight: 700; }
   .info-box { background: rgba(79,142,247,.08); border: 1px solid rgba(79,142,247,.2); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
   .info-box strong { color: var(--accent); }
+  /* ---- Calculator ---- */
+  .calc-fab { position: fixed; bottom: 24px; right: 24px; z-index: 190; display: flex; align-items: center; gap: 8px; background: var(--accent); color: #fff; border: none; border-radius: 99px; padding: 12px 18px; font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.45); transition: opacity .15s; }
+  .calc-fab:hover { opacity: .9; }
+  .calc-panel { position: fixed; bottom: 24px; right: 24px; z-index: 191; width: 320px; max-width: calc(100vw - 24px); background: var(--surface); border: 1px solid var(--border); border-radius: var(--card-radius); padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.6); display: none; }
+  .calc-panel.open { display: block; }
+  .calc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .calc-head h2 { font-size: 15px; }
+  .calc-x { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 4px; }
+  .calc-display { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; text-align: right; margin-bottom: 12px; overflow: hidden; }
+  .calc-expr { font-size: 12px; color: var(--muted); min-height: 15px; word-break: break-all; font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace; }
+  .calc-val { font-size: 28px; font-weight: 700; color: var(--text); word-break: break-all; font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace; }
+  .calc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .calc-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 0; color: var(--text); font-size: 16px; font-weight: 600; cursor: pointer; transition: background .12s; }
+  .calc-btn:hover { background: var(--border); }
+  .calc-btn.op { color: var(--accent); }
+  .calc-btn.eq { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .calc-btn.fn { color: var(--warn); font-size: 14px; }
+  .calc-hint { font-size: 11px; color: var(--muted); margin-top: 10px; text-align: center; }
   .toast { position: fixed; bottom: 24px; right: 24px; background: var(--accent2); color: #fff; padding: 12px 20px; border-radius: 8px; font-weight: 600; font-size: 14px; transform: translateY(80px); opacity: 0; transition: all .3s; z-index: 200; }
   .toast.show { transform: translateY(0); opacity: 1; }
   .text-green { color: var(--accent2); }
@@ -152,6 +170,7 @@
     <div class="nav-item" onclick="showPage('payperiod')"><span class="icon">💰</span> Pay Period</div>
     <div class="nav-item" onclick="showPage('subs')"><span class="icon">🔂</span> Subscriptions</div>
     <div class="nav-item" onclick="showPage('calendar')"><span class="icon">🗓️</span> Calendar</div>
+    <div class="nav-item" onclick="toggleCalc()"><span class="icon">🧮</span> Calculator</div>
     <div class="nav-item" onclick="setGhToken()" title="Set GitHub token / sync now"><span class="icon">☁️</span> Sync <span id="sync-status" style="margin-left:auto;font-size:11px;color:var(--muted)"></span></div>
   </nav>
 
@@ -638,6 +657,42 @@
       <button class="btn btn-transfer" onclick="saveTransfer()" style="background:#a78bfa;color:#fff;border:none;font-weight:700">Complete Transfer</button>
     </div>
   </div>
+</div>
+
+<!-- CALCULATOR -->
+<button class="calc-fab" id="calc-fab" onclick="toggleCalc()" title="Open calculator"><span>🧮</span> Calculator</button>
+<div class="calc-panel" id="calc-panel">
+  <div class="calc-head">
+    <h2>🧮 Calculator</h2>
+    <button class="calc-x" onclick="toggleCalc()" title="Close">✕</button>
+  </div>
+  <div class="calc-display">
+    <div class="calc-expr" id="calc-expr">&nbsp;</div>
+    <div class="calc-val" id="calc-val">0</div>
+  </div>
+  <div class="calc-grid">
+    <button class="calc-btn fn" onclick="calcClear()">AC</button>
+    <button class="calc-btn fn" onclick="calcBack()">⌫</button>
+    <button class="calc-btn fn" onclick="calcPct()">%</button>
+    <button class="calc-btn op" onclick="calcOp('/')">÷</button>
+    <button class="calc-btn" onclick="calcDigit('7')">7</button>
+    <button class="calc-btn" onclick="calcDigit('8')">8</button>
+    <button class="calc-btn" onclick="calcDigit('9')">9</button>
+    <button class="calc-btn op" onclick="calcOp('*')">×</button>
+    <button class="calc-btn" onclick="calcDigit('4')">4</button>
+    <button class="calc-btn" onclick="calcDigit('5')">5</button>
+    <button class="calc-btn" onclick="calcDigit('6')">6</button>
+    <button class="calc-btn op" onclick="calcOp('-')">−</button>
+    <button class="calc-btn" onclick="calcDigit('1')">1</button>
+    <button class="calc-btn" onclick="calcDigit('2')">2</button>
+    <button class="calc-btn" onclick="calcDigit('3')">3</button>
+    <button class="calc-btn op" onclick="calcOp('+')">+</button>
+    <button class="calc-btn" onclick="calcDigit('0')">0</button>
+    <button class="calc-btn" onclick="calcDigit('.')">.</button>
+    <button class="calc-btn eq" style="grid-column:span 2" onclick="calcEq()">=</button>
+  </div>
+  <div class="calc-hint">Tap <strong>＋ Log</strong> to file the result as a transaction</div>
+  <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" id="calc-log" onclick="calcLogTxn()">＋ Log result as transaction</button>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1219,12 +1274,16 @@ function renderAccounts(){
     se.textContent=(safe<0?'−':'')+'$'+fmt(Math.abs(safe));
     se.className='card-value '+(safe>=0?'text-green':'text-danger');
   }
-  // Leftover after goals — mirrors the Goals-for-This-Check waterfall exactly.
+  // Spendable (blue number under the checking card) = money in minus every unpaid
+  // bill still coming out this period. This is what the card can actually cover
+  // right now — it does NOT subtract the goal allocations below, because putting
+  // money on a card is a decision, not a subtraction from what you can spend.
   const acctsL=accounts||[];
   const visaL=acctsL.find(a=>/visa/i.test(a.name||''));
   const mcL=acctsL.find(a=>/mastercard/i.test(a.name||''));
   const visaOwedL=visaL?Math.abs(Math.min(0,parseFloat(visaL.balance)||0)):0;
   const mcOwedL=mcL?Math.abs(Math.min(0,parseFloat(mcL.balance)||0)):0;
+  // Leftover after goals — mirrors the Goals-for-This-Check waterfall exactly.
   let leftover=Math.max(0,safe);
   if(leftover>0){
     if(visaOwedL>0){ const buffer=Math.min(50,Math.max(0,leftover*0.15)); leftover-=Math.min(visaOwedL,leftover-buffer); leftover-=buffer; }
@@ -1235,12 +1294,11 @@ function renderAccounts(){
   if(lo){ lo.textContent='$'+fmt(Math.max(0,leftover)); lo.className='card-value text-green'; }
   document.getElementById('account-list').innerHTML=accounts.map(a=>{
     const neg=a.balance<0;
-    // Spendable = what's actually left after bills AND this check's goal
-    // allocations (Visa attack, buffer, etc.) — matches "Left in checking after
-    // goals" on the Pay Period tab, so both tabs always show the same number.
-    const accSafe = leftover;
+    // The blue number = Safe To Spend for this period (money in − unpaid bills).
+    // It updates the moment the balance, paycheck, or any bill changes.
+    const accSafe = safe;
     const safeLine = a.type==='Checking'
-      ? `<div class="account-balance" style="color:${accSafe>=0?'var(--accent)':'var(--danger)'};margin-top:2px">${accSafe<0?'−':''}$${fmt(Math.abs(accSafe))}</div>`
+      ? `<div class="account-balance" style="color:${accSafe>=0?'var(--accent)':'var(--danger)'};margin-top:2px" title="What you can actually spend this period after the bills still coming out">${accSafe<0?'−':''}$${fmt(Math.abs(accSafe))} <span style="font-size:11px;font-weight:600;color:var(--muted)">spendable</span></div>`
       : '';
     return `<div class="account-card">
       <div style="flex:1"><div class="account-name">${a.name}</div>
@@ -1530,6 +1588,93 @@ function deleteTrf(id){
   transfers=transfers.filter(x=>x.id!==id);sv('transfers',transfers);
   renderAll();showToast('Transfer deleted — balances reversed');
 }
+
+// CALCULATOR — a plain arithmetic calculator with a memory register so a result
+// can be filed straight into the Spending log. Independent of the finance state.
+let calcEntry = '';   // current number being typed
+let calcPrev  = null; // left operand
+let calcOpn   = null; // pending operator
+let calcLast  = '0';  // last shown result
+function calcRender(){
+  const e=document.getElementById('calc-expr'), v=document.getElementById('calc-val');
+  if(!e||!v) return;
+  let expr='';
+  if(calcPrev!==null && calcOpn){
+    const sym={'+':'+','-':'−','*':'×','/':'÷'}[calcOpn]||calcOpn;
+    expr=`${calcPrev} ${sym}${calcEntry!==''?' '+calcEntry:''}`;
+  }
+  e.innerHTML=expr||'&nbsp;';
+  v.textContent=calcEntry!==''?calcEntry:(calcLast||'0');
+}
+function toggleCalc(){
+  const p=document.getElementById('calc-panel'), f=document.getElementById('calc-fab');
+  if(!p) return;
+  const open=p.classList.toggle('open');
+  if(f) f.style.display=open?'none':'';
+  if(open) calcRender();
+}
+function calcDigit(d){
+  if(d==='.' && calcEntry.includes('.')) return;
+  if(d==='.' && calcEntry==='') calcEntry='0.';
+  else calcEntry+=d;
+  calcRender();
+}
+function calcEval(a,op,b){
+  a=parseFloat(a)||0; b=parseFloat(b)||0;
+  switch(op){
+    case '+': return a+b;
+    case '-': return a-b;
+    case '*': return a*b;
+    case '/': return b===0?NaN:a/b;
+  }
+  return b;
+}
+function calcOp(op){
+  if(calcOpn!==null && calcEntry!==''){ calcPrev=calcEval(calcPrev,calcOpn,calcEntry); calcLast=String(calcPrev); }
+  else if(calcPrev===null){ calcPrev=calcEntry!==''?parseFloat(calcEntry):(parseFloat(calcLast)||0); }
+  calcOpn=op; calcEntry=''; calcRender();
+}
+function calcEq(){
+  if(calcOpn!==null){
+    const r=calcEval(calcPrev,calcOpn,calcEntry!==''?calcEntry:calcPrev);
+    if(isNaN(r)){ document.getElementById('calc-val').textContent='Error'; calcPrev=null;calcOpn=null;calcEntry=''; return; }
+    calcLast=String(Math.round(r*1e10)/1e10);
+    calcPrev=null; calcOpn=null; calcEntry='';
+  } else {
+    calcLast=calcEntry!==''?calcEntry:calcLast;
+    calcEntry='';
+  }
+  calcRender();
+}
+function calcPct(){ const n=(parseFloat(calcEntry||calcLast)||0)/100; calcEntry=String(Math.round(n*1e10)/1e10); calcRender(); }
+function calcClear(){ calcEntry='';calcPrev=null;calcOpn=null;calcLast='0';calcRender(); }
+function calcBack(){ calcEntry=calcEntry.slice(0,-1); calcRender(); }
+function calcLogTxn(){
+  const raw=calcEntry!==''?calcEntry:calcLast;
+  const amt=parseFloat(raw);
+  if(isNaN(amt)||amt<=0) return showToast('Run a calculation first');
+  const acc=(accounts.find(a=>/checking|debit/i.test(a.name||''))||accounts[0]);
+  const desc=prompt('Description for this $'+fmt(amt)+' entry:', 'Calculator entry');
+  if(desc===null) return;
+  const type=confirm('OK = money OUT (expense)\nCancel = money IN (income)')?'expense':'income';
+  transactions.push({id:nextTxnId++,date:new Date().toISOString().split('T')[0],desc:desc||'Calculator entry',category:'Other',amount:amt,type,accountId:acc?acc.id:0});
+  sv('transactions',transactions);sv('nextTxnId',nextTxnId);
+  if(acc){ acc.balance+=type==='expense'?-amt:amt; sv('accounts',accounts); }
+  renderAll();
+  showToast('Logged $'+fmt(amt)+(type==='expense'?' out':' in'));
+}
+// Keyboard support while the panel is open
+document.addEventListener('keydown',e=>{
+  const p=document.getElementById('calc-panel');
+  if(!p||!p.classList.contains('open')) return;
+  const k=e.key;
+  if(/^[0-9.]$/.test(k)) calcDigit(k);
+  else if(k==='+'||k==='-'||k==='*'||k==='/') calcOp(k);
+  else if(k==='Enter'||k==='=') { e.preventDefault(); calcEq(); }
+  else if(k==='Backspace') calcBack();
+  else if(k==='Escape') toggleCalc();
+  else if(k.toLowerCase()==='c') calcClear();
+});
 
 // UTILS
 function closeModal(id){document.getElementById(id).classList.remove('open');}
