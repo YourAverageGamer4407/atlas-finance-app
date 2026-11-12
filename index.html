@@ -1243,7 +1243,7 @@ function showPage(id){
 function renderAll(){
   renderDashboard(); renderAccounts(); renderSpending();
   renderTransfers(); renderGoals(); updateFilterMonth();
-  populateTransferDropdowns(); populateTxnDrop();
+  populateTransferDropdowns(true); populateTxnDrop();
   loadPayPeriod(); renderPayPeriod(); renderSubs(); renderCalendar();
   const ss=document.getElementById('sync-status'); if(ss) ss.textContent=syncStatus();
 }
@@ -1576,22 +1576,33 @@ function deleteTxn(id){
 }
 
 // TRANSFER CRUD
-function populateTransferDropdowns(){
+// preserve=true keeps the current From/To picks across a re-render. renderAll()
+// runs on the 30s sync poll (and after every save), and this function rebuilds
+// both <option> lists from scratch — which used to blank whatever the Commander
+// had already chosen while the transfer window was open. Reproduced and fixed
+// 2026-11-12; regression test: transfer_reset_test.py
+function populateTransferDropdowns(preserve){
   const fs=document.getElementById('transfer-from');const ts=document.getElementById('transfer-to');
   if(!fs||!ts)return;
+  const keepF=preserve?fs.value:'';const keepT=preserve?ts.value:'';
   fs.innerHTML='<option value="">— Select source —</option>'+
     accounts.filter(a=>a.type==='Checking'||a.type==='Savings'||a.type==='Cash').map(a=>`<option value="${a.id}">${a.name} ($${fmt(a.balance)})</option>`).join('')+
     accounts.filter(a=>a.type!=='Checking'&&a.type!=='Savings'&&a.type!=='Cash').map(a=>`<option value="${a.id}">${a.name}</option>`).join('');
   ts.innerHTML='<option value="">— Select destination —</option>'+
     accounts.filter(a=>a.balance<0).map(a=>`<option value="${a.id}">${a.name} (owe $${fmt(Math.abs(a.balance))})</option>`).join('')+
     accounts.filter(a=>a.balance>=0).map(a=>`<option value="${a.id}">${a.name} ($${fmt(a.balance)})</option>`).join('');
+  // Re-apply the picks, but only if that account is still in the list. A stale
+  // value is cleared rather than left pointing at the wrong account.
+  if(keepF) fs.value=[...fs.options].some(o=>o.value===keepF)?keepF:'';
+  if(keepT) ts.value=[...ts.options].some(o=>o.value===keepT)?keepT:'';
+  updateTransferPreview();
 }
 function openTransferModal(){
   document.getElementById('transfer-amount').value='';
   document.getElementById('transfer-notes').value='';
   document.getElementById('transfer-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('transfer-preview').style.display='none';
-  populateTransferDropdowns();
+  populateTransferDropdowns(false);
   document.getElementById('transfer-modal').classList.add('open');
 }
 function quickPay(toId){
