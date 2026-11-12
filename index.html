@@ -243,10 +243,7 @@
       </div>
       <div class="section" style="margin-bottom:20px">
         <div class="section-header"><h2>💰 This Paycheck</h2>
-          <select id="pp-check" onchange="savePayPeriod();renderPayPeriod();renderAccounts()" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--text);font-size:13px">
-            <option value="1">1st Paycheck (1st–14th)</option>
-            <option value="15">15th Paycheck (15th–end)</option>
-          </select>
+          <span id="acc-period-label" style="font-size:12px;font-weight:600;color:var(--accent);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 12px">1st paycheck (1st–14th)</span>
         </div>
         <div class="grid-3">
           <div class="card">
@@ -417,10 +414,7 @@
             </select>
           </div>
           <div class="form-group" style="margin-bottom:12px"><label>Which paycheck is this?</label>
-            <select id="pp-check-2" onchange="document.getElementById('pp-check').value=this.value;savePayPeriod();renderPayPeriod();renderAccounts()">
-              <option value="1">1st Paycheck (covers the 1st–14th)</option>
-              <option value="15">15th Paycheck (covers the 15th–end of month)</option>
-            </select>
+            <div id="pp-check-label" style="font-size:13px;font-weight:600;color:var(--accent);padding:8px 0">Derived from today's date — 1st paycheck (1st–14th)</div>
           </div>
           <div class="form-group" style="margin-bottom:12px"><label>Paycheck already deposited?</label>
             <select id="pp-deposited" onchange="savePayPeriod();renderPayPeriod();renderAccounts()">
@@ -455,6 +449,7 @@
             <tbody id="pp-bills-table"><tr><td colspan="5" style="color:var(--muted);text-align:center;padding:24px">No bills yet — add one or load the usual set</td></tr></tbody>
           </table>
         </div>
+        <div id="pp-bills-note" style="font-size:12px;color:var(--muted);padding:8px 2px 0"></div>
       </div>
       <div class="section mt-16">
         <div class="section-header"><h2>🎯 Goals for This Check</h2></div>
@@ -838,6 +833,12 @@ let nextAccId  = ld('nextAccId', DEFAULT_ACCOUNTS.length+1);
 let nextTxnId  = ld('nextTxnId', 1);
 let nextTrfId  = ld('nextTrfId', 1);
 let payPeriod  = ld('payPeriod', { income:'', balance:'', check:'1', deposited:'yes' });
+// Self-heal a stale stored `check`: it used to be a setting the Commander could
+// flip, so saved state may still say '15' while today is in the 1st half. The
+// period is now derived from the calendar, so overwrite the stale value once at
+// load and save it back. Nothing reads it for logic any more, but leaving a wrong
+// number in storage would mislead anyone inspecting the saved state.
+if(payPeriod.check !== currentCheck()){ payPeriod.check=currentCheck(); sv('payPeriod',payPeriod); }
 let ppBills    = ld('ppBills', []);
 let nextBillId = ld('nextBillId', 1);
 let subs       = ld('subs', DEFAULT_SUBS);
@@ -911,7 +912,10 @@ function savePayPeriod(){
   payPeriod = {
     income:    document.getElementById('pp-income')?.value||payPeriod.income||'',
     balance:   document.getElementById('pp-balance')?.value||payPeriod.balance||'',
-    check:     document.getElementById('pp-check')?.value||payPeriod.check||'1',
+    // `check` is no longer read from a control — the period is DERIVED from the
+    // real date by currentCheck(). The field is kept only so older saved state
+    // still loads without an error; it is ignored everywhere that matters.
+    check:     payPeriod.check||'1',
     deposited: document.getElementById('pp-deposited')?.value||payPeriod.deposited||'yes',
     mode:      document.getElementById('pp-mode')?.value||payPeriod.mode||'real',
   };
@@ -920,8 +924,6 @@ function savePayPeriod(){
 function loadPayPeriod(){
   if(document.getElementById('pp-income'))    document.getElementById('pp-income').value    = payPeriod.income||'';
   if(document.getElementById('pp-balance'))   document.getElementById('pp-balance').value   = payPeriod.balance||'';
-  if(document.getElementById('pp-check'))     document.getElementById('pp-check').value     = payPeriod.check||'1';
-  if(document.getElementById('pp-check-2'))   document.getElementById('pp-check-2').value   = payPeriod.check||'1';
   if(document.getElementById('pp-deposited')) document.getElementById('pp-deposited').value = payPeriod.deposited||'yes';
   if(document.getElementById('pp-mode'))      document.getElementById('pp-mode').value      = payPeriod.mode||'real';
 }
@@ -943,10 +945,21 @@ function commitDebitEdit(){
   inp.style.display='none';disp.style.display='';
   renderPayPeriod();renderAccounts();
 }
+// ── THE PAY PERIOD IS DERIVED FROM THE REAL DATE ──────────────────────────────
+// The Commander's paydays are the 1st and the 15th, so the period is simply
+// whichever half of THIS month contains today. This is NOT a setting: there is
+// no control anywhere that can move it. That control used to sit on the Accounts
+// tab and rewriting it moved the window under bills that were already loaded,
+// so the app counted the wrong half's bills against the wrong half's balance.
+// Deriving it makes that class of bug impossible — the period and the calendar
+// can never disagree, because the calendar is the only input.
+function currentCheck(){
+  return new Date().getDate()<=14 ? '1' : '15';
+}
 function ppPeriodDates(){
   const today=new Date();
   const y=today.getFullYear(), m=today.getMonth();
-  const check=payPeriod.check||'1';
+  const check=currentCheck();
   let start, end;
   if(check==='1'){
     start=new Date(y,m,1); end=new Date(y,m,14,23,59,59);
@@ -954,6 +967,21 @@ function ppPeriodDates(){
     start=new Date(y,m,15); end=new Date(y,m+1,0,23,59,59);
   }
   return {start,end};
+}
+// True when a bill's due date falls inside the CURRENT period. A bill loaded in
+// an earlier half must not count toward this half's bills-out total, or safe-to-
+// spend understates what is actually coming.
+function billInPeriod(b, per){
+  if(!b || !b.due) return false;
+  const p=per||ppPeriodDates();
+  const due=new Date(b.due+'T12:00:00');
+  if(isNaN(due.getTime())) return false;
+  return due>=p.start && due<=p.end;
+}
+// The bills that belong to THIS period — the only bills any total may count.
+function periodBills(){
+  const per=ppPeriodDates();
+  return ppBills.filter(b=>billInPeriod(b, per));
 }
 function openBillModal(){
   document.getElementById('bill-name').value='';
@@ -999,11 +1027,14 @@ function toggleBillPaid(key){
 // One-tap: assume every bill this period is already paid EXCEPT the last
 // haircut of the pay period. Flips the paid flag only — no transactions logged.
 function assumePaidExceptLastHaircut(){
-  if(!ppBills.length) return showToast('No bills loaded — tap Load Usual Bills first');
+  const inPeriod=periodBills();
+  if(!inPeriod.length) return showToast('No bills loaded in this period — tap Load Usual Bills first');
   // the "last haircut" = the Haircuts bill with the latest due date this period
-  const haircuts=ppBills.filter(b=>/haircut/i.test(b.name));
+  const haircuts=inPeriod.filter(b=>/haircut/i.test(b.name));
   const lastHaircut=haircuts.sort((a,b)=>(a.due||'').localeCompare(b.due||'')).pop();
-  ppBills.forEach(b=>{ b.paid = !(lastHaircut && b.id===lastHaircut.id); });
+  // Only this period's bills are touched — "this check" must not mark another
+  // period's bill paid.
+  inPeriod.forEach(b=>{ b.paid = !(lastHaircut && b.id===lastHaircut.id); });
   sv('ppBills',ppBills); renderPayPeriod();
   showToast(lastHaircut ? 'All bills marked paid except the last haircut' : 'All bills marked paid (no haircut in this period)');
 }
@@ -1083,7 +1114,10 @@ function autoMarkBillsPaid(){
   const pays=ppPeriodPayments();
   if(!pays.length) return [];
   const marked=[];
-  ppBills.forEach(b=>{
+  // Only bills that belong to THIS period may be marked from this period's
+  // payments. A payment dated in the other half must never clear this half's
+  // bill — that is exactly the cross-contamination the removed selector caused.
+  periodBills().forEach(b=>{
     if(b.paid) return;
     const sub=subs.find(s=>s.id===b.subId);
     const keys=[normName(b.name)];
@@ -1171,7 +1205,8 @@ function renderPayPeriod(){
   const moneyIn = isTest
     ? income
     : (hasBalance ? (payPeriod.deposited==='yes' ? balance : balance+income) : 0);
-  const unpaid=ppBills.filter(b=>!b.paid);
+  const inPeriod=periodBills();
+  const unpaid=inPeriod.filter(b=>!b.paid);
   const billsOut=unpaid.reduce((s,b)=>s+b.amount,0);
   const safe=moneyIn-billsOut;
   document.getElementById('pp-moneyin').textContent='$'+fmt(moneyIn);
@@ -1181,7 +1216,7 @@ function renderPayPeriod(){
       ? (payPeriod.deposited==='yes' ? 'Balance (check already in)' : 'Balance + incoming check ($'+fmt(income)+')')
       : 'No balance entered — go to the Accounts tab and enter what your card actually shows');
   document.getElementById('pp-bills-out').textContent='−$'+fmt(billsOut);
-  document.getElementById('pp-bills-count').textContent=unpaid.length+' unpaid of '+ppBills.length;
+  document.getElementById('pp-bills-count').textContent=unpaid.length+' unpaid of '+inPeriod.length;
   const se=document.getElementById('pp-safe');
   se.textContent=(safe<0?'−':'')+'$'+fmt(Math.abs(safe));
   se.className='alloc-amount '+(safe>=0?'positive':'');
@@ -1196,7 +1231,7 @@ function renderPayPeriod(){
   document.getElementById('pp-days').textContent=daysTxt;
   // bills table
   const tb=document.getElementById('pp-bills-table');
-  const sorted=[...ppBills].sort((a,b)=>(a.due||'').localeCompare(b.due||''));
+  const sorted=[...inPeriod].sort((a,b)=>(a.due||'').localeCompare(b.due||''));
   tb.innerHTML=sorted.length?sorted.map(b=>
     `<tr style="${b.paid?'opacity:.45':''}">
       <td>${b.due||'—'}</td>
@@ -1205,7 +1240,17 @@ function renderPayPeriod(){
       <td><button class="btn ${b.paid?'btn-secondary':'btn-success'} btn-sm" onclick="toggleBillPaid('${b.uid}')">${b.paid?'Paid ✓':'Mark Paid'}</button></td>
       <td><button class="btn btn-danger btn-sm" onclick="deleteBill(${b.id})">✕</button></td>
     </tr>`).join('')
-    :'<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:24px">No bills yet — add one or load the usual set</td></tr>';
+    :'<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:24px">No bills in this pay period yet — add one or load the usual set</td></tr>';
+  // Tell the Commander when bills exist in the OTHER half, so they do not think
+  // their bills disappeared. Those bills are real; they just are not this check's.
+  const elsewhere=ppBills.filter(b=>!billInPeriod(b));
+  const note=document.getElementById('pp-bills-note');
+  if(note){
+    const n=elsewhere.length;
+    note.textContent = n
+      ? n+' bill'+(n===1?'':'s')+' due in the other paycheck ('+(currentCheck()==='1'?'15th–end':'1st–14th')+') — kept, not counted here'
+      : '';
+  }
 }
 
 // ── GOALS FOR THIS CHECK ──────────────────────────────────────────────────────
@@ -1697,7 +1742,9 @@ function renderAccounts(){
   const moneyIn = balance>0
     ? (payPeriod.deposited==='yes' ? balance : balance+income)
     : 0;
-  const unpaid=ppBills.filter(b=>!b.paid);
+  // Only bills due INSIDE this period count toward bills-out and safe-to-spend.
+  const inPeriod=periodBills();
+  const unpaid=inPeriod.filter(b=>!b.paid);
   const billsOut=unpaid.reduce((s,b)=>s+b.amount,0);
   const safe=moneyIn-billsOut;
   const dd=document.getElementById('acc-debit-display');
@@ -1706,7 +1753,7 @@ function renderAccounts(){
     dd.className='card-value '+(balance>=0?'text-green':'text-danger');
   }
   const bo=document.getElementById('acc-bills-out'); if(bo) bo.textContent='−$'+fmt(billsOut);
-  const bc=document.getElementById('acc-bills-count'); if(bc) bc.textContent=unpaid.length+' unpaid of '+ppBills.length+' this period ('+((payPeriod.check||'1')==='1'?'1st':'15th')+' paycheck)';
+  const bc=document.getElementById('acc-bills-count'); if(bc) bc.textContent=unpaid.length+' unpaid of '+inPeriod.length+' this period ('+(currentCheck()==='1'?'1st':'15th')+' paycheck)';
   const se=document.getElementById('acc-safe');
   if(se){
     se.textContent=(safe<0?'−':'')+'$'+fmt(Math.abs(safe));
@@ -1730,6 +1777,9 @@ function renderAccounts(){
   if(lo){ lo.textContent='$'+fmt(Math.max(0,leftover)); lo.className='card-value text-green'; }
   const los=document.getElementById('acc-leftover-sub');
   if(los){ los.textContent='What your card shows right now · green = left after bills, your $'+fmt(planL.fun.budget)+' & goals'; }
+  // The period label on the Accounts tab — derived, never chosen.
+  const pl=document.getElementById('acc-period-label');
+  if(pl) pl.textContent=(currentCheck()==='1'?'1st paycheck (1st–14th)':'15th paycheck (15th–end)');
   document.getElementById('account-list').innerHTML=accounts.map(a=>{
     const neg=a.balance<0;
     // The blue number = Safe To Spend for this period (money in − unpaid bills).
@@ -1804,7 +1854,7 @@ function renderAccountHistory(id){
   const a=accounts.find(x=>x.id===id);
   const sub=document.getElementById('acc-history-sub');
   if(sub) sub.textContent=(a?a.name:'Account')+' · '+rows.length+' '+(rows.length===1?'entry':'entries')+
-    (range==='period'?(' · '+((payPeriod.check||'1')==='1'?'1st':'15th')+' paycheck period')
+    (range==='period'?(' · '+(currentCheck()==='1'?'1st':'15th')+' paycheck period')
       :range==='month'?(' · '+curMonth()):' · all time');
   const so=document.getElementById('acc-history-out'); if(so) so.textContent='−$'+fmt(totalOut);
   const si=document.getElementById('acc-history-in');  if(si) si.textContent='+$'+fmt(totalIn);
