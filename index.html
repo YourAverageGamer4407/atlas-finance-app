@@ -414,7 +414,12 @@
             </select>
           </div>
           <div class="form-group" style="margin-bottom:12px"><label>Which paycheck is this?</label>
-            <div id="pp-check-label" style="font-size:13px;font-weight:600;color:var(--accent);padding:8px 0">Derived from today's date — 1st paycheck (1st–14th)</div>
+            <select id="pp-check" onchange="setCheckChoice(this.value)">
+              <option value="auto">Auto — follow today's date</option>
+              <option value="1">1st paycheck (1st–14th)</option>
+              <option value="15">15th paycheck (15th–end)</option>
+            </select>
+            <div id="pp-check-label" style="font-size:12px;color:var(--muted);padding:6px 0 0">Following the calendar — 1st paycheck (1st–14th). Pick 1st or 15th if a check landed early.</div>
           </div>
           <div class="form-group" style="margin-bottom:12px"><label>Paycheck already deposited?</label>
             <select id="pp-deposited" onchange="savePayPeriod();renderPayPeriod();renderAccounts()">
@@ -755,7 +760,7 @@ const GH_PATH  = 'sync_data.json';
 const GH_API   = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_PATH}`;
 // Token: set once per device via the Sync button; kept in localStorage.
 const GH_TOKEN = ()=> localStorage.getItem('atlas_gh_token') || '';
-const SYNC_KEYS = ['accounts','transactions','transfers','nextAccId','nextTxnId','nextTrfId','payPeriod','ppBills','nextBillId','subs','subsMigrated','goalTargets','funFloor'];
+const SYNC_KEYS = ['accounts','transactions','transfers','nextAccId','nextTxnId','nextTrfId','payPeriod','ppBills','nextBillId','subs','subsMigrated','goalTargets','funFloor','checkChoiceVersion'];
 let _syncT = null, _suppressPush = false, _ghSha = null, _lastRemote = 0;
 
 function ghHeaders(){ return { 'Authorization':'Bearer '+GH_TOKEN(), 'Accept':'application/vnd.github+json', 'Content-Type':'application/json' }; }
@@ -832,13 +837,35 @@ let transfers  = ld('transfers', []);
 let nextAccId  = ld('nextAccId', DEFAULT_ACCOUNTS.length+1);
 let nextTxnId  = ld('nextTxnId', 1);
 let nextTrfId  = ld('nextTrfId', 1);
-let payPeriod  = ld('payPeriod', { income:'', balance:'', check:'1', deposited:'yes' });
-// Self-heal a stale stored `check`: it used to be a setting the Commander could
-// flip, so saved state may still say '15' while today is in the 1st half. The
-// period is now derived from the calendar, so overwrite the stale value once at
-// load and save it back. Nothing reads it for logic any more, but leaving a wrong
-// number in storage would mislead anyone inspecting the saved state.
-if(payPeriod.check !== currentCheck()){ payPeriod.check=currentCheck(); sv('payPeriod',payPeriod); }
+let payPeriod  = ld('payPeriod', { income:'', balance:'', check:'auto', deposited:'yes' });
+// ── WHICH PAYCHECK IS THIS? (Commander, 2026-11-12) ───────────────────────────
+// An explicit choice, 'auto' by default. 'auto' follows the calendar; '1'/'15' are
+// the Commander's override for the weeks the calendar gets it wrong — chiefly a
+// check that landed EARLY, where the new period is really live while today's date
+// still sits in the old half. The override is safe to expose now because every
+// total scopes its bills through periodBills()/billInPeriod(): moving the period
+// re-scopes which bills count. That is precisely what the OLD selector failed to
+// do — it moved the window while the totals still summed every bill in the list,
+// which is why flipping it "messed everything up". The bug was the unscoped
+// totals, not the existence of the choice.
+function normalizeCheck(v){ return (v==='1'||v==='15') ? v : 'auto'; }
+// One-time upgrade to the explicit choice. `check` used to be a value the app
+// wrote to itself (a derived '1'/'15'), so state saved before this change carries
+// a stale number rather than a real choice — clear it once, to 'auto', so nobody
+// is silently pinned to a half.
+//
+// The marker is SYNCED (checkChoiceVersion), not local-only: if it were local, a
+// second device would re-run the migration on the moment it synced down a real
+// choice and reset it to auto. Keyed to the value being a LEGACY number, never to
+// device, so it runs exactly once across every device.
+if(ld('checkChoiceVersion',0) < 1){
+  if(payPeriod.check==='1' || payPeriod.check==='15'){
+    payPeriod.check = 'auto';
+    sv('payPeriod', payPeriod);
+  }
+  sv('checkChoiceVersion', 1);
+}
+payPeriod.check = normalizeCheck(payPeriod.check);
 let ppBills    = ld('ppBills', []);
 let nextBillId = ld('nextBillId', 1);
 let subs       = ld('subs', DEFAULT_SUBS);
@@ -912,10 +939,9 @@ function savePayPeriod(){
   payPeriod = {
     income:    document.getElementById('pp-income')?.value||payPeriod.income||'',
     balance:   document.getElementById('pp-balance')?.value||payPeriod.balance||'',
-    // `check` is no longer read from a control — the period is DERIVED from the
-    // real date by currentCheck(). The field is kept only so older saved state
-    // still loads without an error; it is ignored everywhere that matters.
-    check:     payPeriod.check||'1',
+    // The Commander's explicit choice: 'auto' follows the calendar, '1'/'15'
+    // override it. Read from the control so the pick survives a save.
+    check:     normalizeCheck(document.getElementById('pp-check')?.value||payPeriod.check),
     deposited: document.getElementById('pp-deposited')?.value||payPeriod.deposited||'yes',
     mode:      document.getElementById('pp-mode')?.value||payPeriod.mode||'real',
   };
@@ -926,6 +952,8 @@ function loadPayPeriod(){
   if(document.getElementById('pp-balance'))   document.getElementById('pp-balance').value   = payPeriod.balance||'';
   if(document.getElementById('pp-deposited')) document.getElementById('pp-deposited').value = payPeriod.deposited||'yes';
   if(document.getElementById('pp-mode'))      document.getElementById('pp-mode').value      = payPeriod.mode||'real';
+  // Show the saved choice, normalised, so a stale value can never select nothing.
+  if(document.getElementById('pp-check'))     document.getElementById('pp-check').value     = normalizeCheck(payPeriod.check);
 }
 function focusDebitEdit(){
   const inp=document.getElementById('pp-balance');
@@ -945,16 +973,40 @@ function commitDebitEdit(){
   inp.style.display='none';disp.style.display='';
   renderPayPeriod();renderAccounts();
 }
-// ── THE PAY PERIOD IS DERIVED FROM THE REAL DATE ──────────────────────────────
-// The Commander's paydays are the 1st and the 15th, so the period is simply
-// whichever half of THIS month contains today. This is NOT a setting: there is
-// no control anywhere that can move it. That control used to sit on the Accounts
-// tab and rewriting it moved the window under bills that were already loaded,
-// so the app counted the wrong half's bills against the wrong half's balance.
-// Deriving it makes that class of bug impossible — the period and the calendar
-// can never disagree, because the calendar is the only input.
+// ── WHICH PAY PERIOD IS LIVE ──────────────────────────────────────────────────
+// The Commander's paydays are the 1st and the 15th, so by default the period is
+// whichever half of THIS month contains today. That default is not always right:
+// a check that lands EARLY puts the next period in play while the date still sits
+// in the old half, and the calendar has no way to know. So the calendar is the
+// default and the Commander can override it to '1' or '15'.
+//
+// SAFE TO OVERRIDE because the window and the totals travel together: every
+// total counts bills via periodBills()/billInPeriod(), which read this function.
+// Change the period and the set of counted bills changes with it. The old bug —
+// the one that "messed everything up" — was that the window moved while totals
+// still summed EVERY bill in the list, so the wrong half's bills came out of the
+// wrong half's balance. That defect was in the totals, and it is fixed.
 function currentCheck(){
-  return new Date().getDate()<=14 ? '1' : '15';
+  const choice=normalizeCheck(payPeriod.check);
+  return choice==='auto' ? (new Date().getDate()<=14 ? '1' : '15') : choice;
+}
+// The control. Re-scopes and re-renders on both tabs so the period, the bills it
+// counts, and every total that depends on them move together in one step.
+function setCheckChoice(v){
+  payPeriod.check=normalizeCheck(v);
+  sv('payPeriod', payPeriod);
+  renderPayPeriod(); renderAccounts();
+  showToast(payPeriod.check==='auto'
+    ? 'Pay period follows the calendar again'
+    : 'Pay period set to the '+payPeriod.check+(payPeriod.check==='1'?'st':'th')+' paycheck');
+}
+// One place that words the state, so the two tabs can never disagree about which
+// period is live or whether it was chosen.
+function halfLabel(){ return currentCheck()==='1' ? '1st paycheck (1st–14th)' : '15th paycheck (15th–end)'; }
+function checkChoiceLabel(){
+  return normalizeCheck(payPeriod.check)==='auto'
+    ? 'Following the calendar — '+halfLabel()+'. Pick 1st or 15th if a check landed early.'
+    : 'Manual override — '+halfLabel()+' (set because a check landed early).';
 }
 function ppPeriodDates(){
   const today=new Date();
@@ -1229,6 +1281,10 @@ function renderPayPeriod(){
   const d=Math.ceil((pd.end-new Date())/86400000);
   daysTxt=d>=0?d+' day'+(d===1?'':'s'):'Period ended';
   document.getElementById('pp-days').textContent=daysTxt;
+  // Report which period is live, and say so plainly when it was chosen rather
+  // than derived — that is the whole reason this control exists.
+  const cl=document.getElementById('pp-check-label');
+  if(cl) cl.textContent=checkChoiceLabel();
   // bills table
   const tb=document.getElementById('pp-bills-table');
   const sorted=[...inPeriod].sort((a,b)=>(a.due||'').localeCompare(b.due||''));
@@ -1777,9 +1833,10 @@ function renderAccounts(){
   if(lo){ lo.textContent='$'+fmt(Math.max(0,leftover)); lo.className='card-value text-green'; }
   const los=document.getElementById('acc-leftover-sub');
   if(los){ los.textContent='What your card shows right now · green = left after bills, your $'+fmt(planL.fun.budget)+' & goals'; }
-  // The period label on the Accounts tab — derived, never chosen.
+  // The period label on the Accounts tab. It marks a manual override so a stale
+  // choice can never masquerade as "the calendar decided this".
   const pl=document.getElementById('acc-period-label');
-  if(pl) pl.textContent=(currentCheck()==='1'?'1st paycheck (1st–14th)':'15th paycheck (15th–end)');
+  if(pl) pl.textContent=halfLabel()+(normalizeCheck(payPeriod.check)==='auto'?'':' · manual');
   document.getElementById('account-list').innerHTML=accounts.map(a=>{
     const neg=a.balance<0;
     // The blue number = Safe To Spend for this period (money in − unpaid bills).
