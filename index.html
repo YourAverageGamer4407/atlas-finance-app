@@ -820,6 +820,36 @@ if(ld('subsMigrated',0) < 3){
 DEFAULT_SUBS.forEach(d=>{
   if(!subs.some(s=>s.name===d.name)) subs.push({ ...d });
 });
+// ── Bill identity repair ──────────────────────────────────────────────────────
+// BUG (fixed): a newly added bill could reuse an id an older bill already had,
+// because nextBillId arrived stale/low through GitHub sync. toggleBillPaid(id)
+// then matched the FIRST row holding that id — so marking the new bill paid
+// silently flipped an older, already-paid bill back to unpaid.
+// Every bill now gets a permanent unique uid, legacy duplicate ids are repaired
+// in place, and nextBillId is forced above the highest id in use, so a collision
+// cannot recur even if a stale counter syncs in from another device.
+function newBillRecord(name,amount,due){
+  const b={ id:nextBillId++, name, amount, due, paid:false };
+  b.uid='bill_'+b.id+'_'+Math.random().toString(36).slice(2,8);
+  return b;
+}
+function ensureBillUids(){
+  let changed=false;
+  const seenIds=new Set(), seenUids=new Set();
+  let maxId=0;
+  ppBills.forEach(b=>{ const n=Number(b.id); if(n>maxId) maxId=n; });
+  ppBills.forEach(b=>{
+    if(!b.id || b.id<=0 || seenIds.has(b.id)){ b.id=++maxId; changed=true; }
+    seenIds.add(b.id);
+    if(!b.uid || seenUids.has(b.uid)){ b.uid='bill_'+b.id+'_'+Math.random().toString(36).slice(2,8); changed=true; }
+    seenUids.add(b.uid);
+  });
+  const want=Math.max(nextBillId||1, maxId+1);
+  if(nextBillId!==want){ nextBillId=want; changed=true; }
+  if(changed){ sv('ppBills',ppBills); sv('nextBillId',nextBillId); }
+  return changed;
+}
+ensureBillUids();
 subs.forEach(s=>{
   if(s.dayOfMonth===undefined) s.dayOfMonth = s.cycle==='semimonthly' ? 0 : (parseInt((s.date||'').split('-')[2])||1);
 });
@@ -889,13 +919,35 @@ function saveBill(){
   const amount=parseFloat(document.getElementById('bill-amount').value);
   const due=document.getElementById('bill-due').value;
   if(!name||isNaN(amount)||amount<=0) return showToast('Enter a bill name and amount');
-  ppBills.push({id:nextBillId++,name,amount,due,paid:false});
+  ppBills.push(newBillRecord(name,amount,due));
   sv('ppBills',ppBills);sv('nextBillId',nextBillId);
   closeModal('bill-modal');renderPayPeriod();showToast('Bill added');
 }
-function toggleBillPaid(id){
-  const b=ppBills.find(x=>x.id===id); if(!b) return;
-  b.paid=!b.paid; sv('ppBills',ppBills); renderPayPeriod();
+// Identify a bill by its permanent uid. Falls back to id ONLY when that id is
+// unambiguous, so a legacy duplicate id can never toggle somebody else's row.
+function findBill(key){
+  if(key===undefined||key===null) return undefined;
+  const byUid=ppBills.find(x=>x.uid===key);
+  if(byUid) return byUid;
+  const matches=ppBills.filter(x=>x.id===key);
+  return matches.length===1?matches[0]:undefined;
+}
+function toggleBillPaid(key){
+  const b=findBill(key);
+  if(!b){
+    const dupes=ppBills.filter(x=>x.id===key).length;
+    return showToast(dupes>1
+      ? 'Two bills share that id — nothing changed. Remove and re-add one of them.'
+      : 'That bill is no longer in this period');
+  }
+  const before=ppBills.map(x=>x.uid+':'+(x.paid?1:0)).join('|');
+  b.paid=!b.paid;
+  const after=ppBills.map(x=>x.uid+':'+(x.paid?1:0)).join('|');
+  // Guard: exactly one bill may change per tap.
+  const flips=before.split('|').filter((v,i)=>v!==after.split('|')[i]).length;
+  if(flips!==1){ b.paid=!b.paid; return showToast('Blocked an ambiguous bill update — no changes made'); }
+  sv('ppBills',ppBills); renderPayPeriod();
+  showToast(b.name+(b.paid?' marked paid ✓':' marked unpaid'));
 }
 // One-tap: assume every bill this period is already paid EXCEPT the last
 // haircut of the pay period. Flips the paid flag only — no transactions logged.
@@ -937,11 +989,12 @@ function loadDefaultBills(){
       if(due>=s && due<=e){
         const dueStr=due.toISOString().split('T')[0];
         if(!ppBills.some(b=>b.name===sub.name&&b.due===dueStr)){
-          ppBills.push({id:nextBillId++,name:sub.name,amount:cost,due:dueStr,paid:false});
+          ppBills.push(newBillRecord(sub.name,cost,dueStr));
         }
       }
     });
   });
+  ensureBillUids();
   sv('ppBills',ppBills);sv('nextBillId',nextBillId);renderPayPeriod();showToast('Bills loaded from subscriptions list');
 }
 
@@ -1038,7 +1091,7 @@ function renderPayPeriod(){
       <td>${b.due||'—'}</td>
       <td style="${b.paid?'text-decoration:line-through':''}">${b.name}</td>
       <td class="text-warn">−$${fmt(b.amount)}</td>
-      <td><button class="btn ${b.paid?'btn-secondary':'btn-success'} btn-sm" onclick="toggleBillPaid(${b.id})">${b.paid?'Paid ✓':'Mark Paid'}</button></td>
+      <td><button class="btn ${b.paid?'btn-secondary':'btn-success'} btn-sm" onclick="toggleBillPaid('${b.uid}')">${b.paid?'Paid ✓':'Mark Paid'}</button></td>
       <td><button class="btn btn-danger btn-sm" onclick="deleteBill(${b.id})">✕</button></td>
     </tr>`).join('')
     :'<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:24px">No bills yet — add one or load the usual set</td></tr>';
