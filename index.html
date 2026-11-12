@@ -720,7 +720,7 @@ const GH_PATH  = 'sync_data.json';
 const GH_API   = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_PATH}`;
 // Token: set once per device via the Sync button; kept in localStorage.
 const GH_TOKEN = ()=> localStorage.getItem('atlas_gh_token') || '';
-const SYNC_KEYS = ['accounts','transactions','transfers','nextAccId','nextTxnId','nextTrfId','payPeriod','ppBills','nextBillId','subs','subsMigrated'];
+const SYNC_KEYS = ['accounts','transactions','transfers','nextAccId','nextTxnId','nextTrfId','payPeriod','ppBills','nextBillId','subs','subsMigrated','goalTargets'];
 let _syncT = null, _suppressPush = false, _ghSha = null, _lastRemote = 0;
 
 function ghHeaders(){ return { 'Authorization':'Bearer '+GH_TOKEN(), 'Accept':'application/vnd.github+json', 'Content-Type':'application/json' }; }
@@ -1101,6 +1101,115 @@ function renderPayPeriod(){
 // Per-paycheck goal allocation, computed live from this period's safe-to-spend.
 // Waterfall: Visa attack (with $50 buffer alongside) → Mastercard avalanche →
 // full e-fund build → investing. Amounts cap at what this check can actually spare.
+//
+// BUG (fixed 2026-11-12): the panel recomputed the attack from the CURRENT card
+// balance, so a transfer from Checking → Visa dropped that balance and the goal
+// silently shrank — the payment you had just made looked like it never happened,
+// and the panel asked for the same money again. The goal and the transfer ledger
+// were two disconnected systems. Now every goal reads back the real transfers
+// dated inside this pay period and shows them as PAID, and each goal row carries
+// a Pay Now button that creates that transfer for real.
+function ymdLocal(d){
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+// ── GOAL DESTINATIONS (editable) ──────────────────────────────────────────────
+// Which account each goal pays FROM and INTO. Saved per device and synced, so
+// the Commander can point the Safety Buffer at a real savings account instead of
+// a name guess. Defaults are resolved from the account list when nothing is set.
+let goalTargets = ld('goalTargets', {});
+function saveGoalTargets(){ sv('goalTargets', goalTargets); }
+function defaultGoalTarget(kind){
+  const from=accounts.find(a=>a.type==='Checking')||accounts.find(a=>a.type==='Savings');
+  const to = kind==='visa'   ? accounts.find(a=>/visa/i.test(a.name||''))
+           : kind==='mc'     ? accounts.find(a=>/mastercard/i.test(a.name||''))
+           :                   accounts.find(a=>a.type==='Savings');
+  return { fromId: from?from.id:'', toId: to?to.id:'' };
+}
+function resolveGoalTarget(kind){
+  const d=defaultGoalTarget(kind), c=goalTargets[kind]||{};
+  // A saved id that no longer exists falls back to the default rather than
+  // silently pointing the transfer at a deleted account.
+  const ok=id=>accounts.some(a=>a.id===id);
+  return {
+    fromId: ok(c.fromId)?c.fromId:d.fromId,
+    toId:   ok(c.toId)?c.toId:d.toId,
+  };
+}
+function setGoalTarget(kind, field, value){
+  const v=parseInt(value);
+  goalTargets[kind]=goalTargets[kind]||{};
+  goalTargets[kind][field]=isNaN(v)?'':v;
+  saveGoalTargets();
+  renderPayPeriod();
+}
+function toggleGoalTargets(){
+  _goalTargetsOpen=!_goalTargetsOpen;
+  renderPayPeriod();
+}
+let _goalTargetsOpen=false;
+// The editor: one From/To pair per goal, so every goal is pointed at a real account.
+function goalTargetsEditor(){
+  if(!_goalTargetsOpen) return '';
+  const opts=(sel,filter)=>'<option value="">— none —</option>'+accounts.filter(filter).map(a=>
+    `<option value="${a.id}"${a.id===sel?' selected':''}>${a.name}</option>`).join('');
+  const line=(kind,label)=>{
+    const t=resolveGoalTarget(kind);
+    return `<div style="display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap">
+      <div style="min-width:150px;font-size:13px;font-weight:600">${label}</div>
+      <select class="form-control" style="flex:1;min-width:120px" onchange="setGoalTarget('${kind}','fromId',this.value)">${opts(t.fromId,()=>true)}</select>
+      <span style="color:var(--muted)">→</span>
+      <select class="form-control" style="flex:1;min-width:120px" onchange="setGoalTarget('${kind}','toId',this.value)">${opts(t.toId,()=>true)}</select>
+    </div>`;
+  };
+  return `<div class="info-box" style="margin:8px 0;border-color:var(--accent)">
+    <div style="font-size:12px;color:var(--accent);font-weight:700;margin-bottom:6px">WHERE EACH GOAL MOVES MONEY</div>
+    ${line('visa','🔥 Visa Payoff')}
+    ${line('mc','⚔️ Mastercard')}
+    ${line('buffer','🛡️ Safety Buffer')}
+    ${line('ef','📦 Emergency Fund')}
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">Left = money comes from · Right = money goes to. Pay Now uses these.</div>
+  </div>`;
+}
+// Transfers dated inside the current pay period, grouped by which goal they pay.
+// A transfer carries goalKey when it was created from a goal row, which is the
+// only way to tell the Safety Buffer and the Emergency Fund apart when both land
+// in the same savings account. Older transfers without a goalKey fall back to
+// the destination account.
+function ppGoalPayments(){
+  const per=ppPeriodDates();
+  const s=ymdLocal(per.start), e=ymdLocal(per.end);
+  const out={visa:[],mc:[],buffer:[],ef:[]};
+  (transfers||[]).forEach(t=>{
+    if(!t||!t.date||t.date<s||t.date>e) return;
+    if(t.goalKey && out[t.goalKey]){ out[t.goalKey].push(t); return; }
+    const to=accounts.find(a=>a.id===t.toId);
+    if(!to) return;
+    if(/visa/i.test(to.name||'')) out.visa.push(t);
+    else if(/mastercard/i.test(to.name||'')) out.mc.push(t);
+    else if(to.type==='Savings') out.ef.push(t);
+  });
+  return out;
+}
+function goalPaidTotal(list){ return (list||[]).reduce((s,t)=>s+(parseFloat(t.amount)||0),0); }
+// Open the transfer window pre-filled so the goal payment becomes a real
+// transfer that moves both balances — not a checkbox.
+let _pendingGoalKey=null;
+function payGoal(kind, amount){
+  openTransferModal();
+  setTimeout(()=>{
+    const t=resolveGoalTarget(kind);
+    if(t.fromId) document.getElementById('transfer-from').value=t.fromId;
+    if(t.toId)   document.getElementById('transfer-to').value=t.toId;
+    if(amount>0) document.getElementById('transfer-amount').value=(Math.round(amount*100)/100).toFixed(2);
+    document.getElementById('transfer-notes').value =
+      kind==='visa' ? 'Visa Payoff Attack — this check'
+    : kind==='mc'   ? 'Mastercard Avalanche — this check'
+    : kind==='buffer' ? 'Safety Buffer — this check'
+    :                 'Emergency Fund — this check';
+    _pendingGoalKey=kind;
+    updateTransferPreview();
+  },50);
+}
 function renderPPGoals(safe, hasBalance){
   const el=document.getElementById('pp-goals-body');
   if(!el) return;
@@ -1109,34 +1218,64 @@ function renderPPGoals(safe, hasBalance){
   const mc=accts.find(a=>/mastercard/i.test(a.name||''));
   const visaOwed=visa?Math.abs(Math.min(0,parseFloat(visa.balance)||0)):0;
   const mcOwed=mc?Math.abs(Math.min(0,parseFloat(mc.balance)||0)):0;
+  const gp=ppGoalPayments();
+  const visaPaid=goalPaidTotal(gp.visa), mcPaid=goalPaidTotal(gp.mc),
+        bufPaid=goalPaidTotal(gp.buffer), efPaid=goalPaidTotal(gp.ef);
+  // A green row proving the payment actually went through, with its date.
+  const paidRow=(icon,name,list,total)=>
+    `<div class="alloc-row" style="background:rgba(52,201,126,.08);border:1px solid rgba(52,201,126,.35);border-radius:8px;padding:10px 12px;margin:6px 0">`
+    +`<div><div class="alloc-label" style="color:var(--positive)">${icon} ${name} — PAID ✓</div>`
+    +`<div class="alloc-sub">${list.map(t=>'$'+fmt(t.amount)+' on '+t.date).join(' · ')}</div></div>`
+    +`<div class="alloc-amount positive">$${fmt(total)}</div></div>`;
+  const allPaidRows=()=>
+    (visaPaid>0?paidRow('🔥','Visa Payoff Attack',gp.visa,visaPaid):'')
+   +(mcPaid>0?paidRow('⚔️','Mastercard Avalanche',gp.mc,mcPaid):'')
+   +(bufPaid>0?paidRow('🛡️','Safety Buffer',gp.buffer,bufPaid):'')
+   +(efPaid>0?paidRow('📦','Emergency Fund Build',gp.ef,efPaid):'');
+  const editorBtn=`<div style="text-align:right;margin:4px 0 8px"><button class="btn btn-secondary btn-sm" onclick="toggleGoalTargets()">⚙️ ${_goalTargetsOpen?'Hide':'Edit'} where goals move money</button></div>`;
   let html='';
   if(safe<=0 && !hasBalance){
     html='<div class="info-box" style="margin:0">Enter this check\'s <strong>paycheck amount</strong> above (and mark paid bills) or your <strong>actual debit balance</strong> on the Accounts tab — this panel computes from whichever you give it.</div>';
   } else if(safe<=0){
-    html='<div class="info-box" style="margin:0;border-color:var(--danger)"><strong style="color:var(--danger)">Nothing to allocate this check.</strong> Bills fully use this period\'s money — goals resume next check. Don\'t put goal money on a card to make it happen.</div>';
+    html=editorBtn+goalTargetsEditor()+allPaidRows()
+        +'<div class="info-box" style="margin:0;border-color:var(--danger)"><strong style="color:var(--danger)">Nothing left to allocate this check.</strong> Bills fully use this period\'s money — goals resume next check. Don\'t put goal money on a card to make it happen.</div>';
   } else {
     let avail=safe;
     const rows=[];
-    const row=(icon,name,sub,amt,color)=>
-      `<div class="alloc-row"><div><div class="alloc-label">${icon} ${name}</div><div class="alloc-sub">${sub}</div></div><div class="alloc-amount" style="color:${color}">$${fmt(amt)}</div></div>`;
+    const row=(icon,name,sub,amt,color,action)=>
+      `<div class="alloc-row"><div><div class="alloc-label">${icon} ${name}</div><div class="alloc-sub">${sub}</div></div>`
+      +`<div style="display:flex;align-items:center;gap:10px"><div class="alloc-amount" style="color:${color}">$${fmt(amt)}</div>`
+      +(action?`<button class="btn btn-transfer btn-sm" onclick="${action}">Pay Now</button>`:'')
+      +`</div></div>`;
     if(visaOwed>0){
+      if(visaPaid>0) rows.push(paidRow('🔥','Visa Payoff Attack',gp.visa,visaPaid));
       const buffer=Math.min(50, Math.max(0, avail*0.15)); // small parallel buffer, capped
       const attack=Math.min(visaOwed, avail-buffer);
-      if(attack>0){ rows.push(row('🔥','Visa Payoff Attack','Kill the 18% card first — this check\'s payment',attack,'var(--danger)')); avail-=attack; }
-      if(buffer>0){ rows.push(row('🛡️','Safety Buffer','Small amount saved alongside the debt attack',buffer,'var(--accent)')); avail-=buffer; }
+      if(attack>0){ rows.push(row('🔥',visaPaid>0?'Visa Payoff Attack — remaining':'Visa Payoff Attack','Kill the 18% card first — this check\'s payment',attack,'var(--danger)',`payGoal('visa',${attack.toFixed(2)})`)); avail-=attack; }
+      // The Safety Buffer is a real transfer into savings, not a label. Once it
+      // has been moved this period it shows PAID and stops being re-asked.
+      if(bufPaid>0) rows.push(paidRow('🛡️','Safety Buffer',gp.buffer,bufPaid));
+      if(buffer>0){ rows.push(row('🛡️',bufPaid>0?'Safety Buffer — remaining':'Safety Buffer','Moved into savings alongside the debt attack',buffer,'var(--accent)',`payGoal('buffer',${buffer.toFixed(2)})`)); avail-=buffer; }
       if(visaOwed-(attack)>0) rows.push(`<div class="alloc-row"><div><div class="alloc-label text-muted" style="font-size:13px">Visa left after this check</div></div><div class="alloc-amount" style="color:var(--muted)">$${fmt(visaOwed-attack)}</div></div>`);
     } else if(mcOwed>0){
+      if(visaPaid>0) rows.push(paidRow('🔥','Visa Payoff Attack',gp.visa,visaPaid));
+      if(mcPaid>0) rows.push(paidRow('⚔️','Mastercard Avalanche',gp.mc,mcPaid));
+      if(bufPaid>0) rows.push(paidRow('🛡️','Safety Buffer',gp.buffer,bufPaid));
       const attack=Math.min(mcOwed, avail);
-      rows.push(row('⚔️','Mastercard Avalanche','Visa is dead — full surplus to the 17.74% card',attack,'var(--warn)')); avail-=attack;
+      rows.push(row('⚔️',mcPaid>0?'Mastercard Avalanche — remaining':'Mastercard Avalanche','Visa is dead — full surplus to the 17.74% card',attack,'var(--warn)',`payGoal('mc',${attack.toFixed(2)})`)); avail-=attack;
       if(mcOwed-attack>0) rows.push(`<div class="alloc-row"><div><div class="alloc-label text-muted" style="font-size:13px">Mastercard left after this check</div></div><div class="alloc-amount" style="color:var(--muted)">$${fmt(mcOwed-attack)}</div></div>`);
     } else {
+      if(visaPaid>0) rows.push(paidRow('🔥','Visa Payoff Attack',gp.visa,visaPaid));
+      if(mcPaid>0) rows.push(paidRow('⚔️','Mastercard Avalanche',gp.mc,mcPaid));
+      if(bufPaid>0) rows.push(paidRow('🛡️','Safety Buffer',gp.buffer,bufPaid));
+      if(efPaid>0) rows.push(paidRow('📦','Emergency Fund Build',gp.ef,efPaid));
       const ef=Math.min(avail*0.6, 400);
-      rows.push(row('📦','Emergency Fund Build','Cards clear — stack the 3-month fund fast',ef,'var(--accent)')); avail-=ef;
+      rows.push(row('📦','Emergency Fund Build','Cards clear — stack the 3-month fund fast',ef,'var(--accent)',`payGoal('ef',${ef.toFixed(2)})`)); avail-=ef;
       if(avail>0){ rows.push(row('📈','TSP / Roth IRA','Start building real wealth',avail,'var(--positive)')); avail=0; }
     }
-    html=rows.join('')
+    html=editorBtn+goalTargetsEditor()+rows.join('')
       +`<div class="alloc-row" style="border-top:2px solid var(--accent);margin-top:8px;padding-top:14px"><div><div class="alloc-label" style="font-size:15px;font-weight:700">Left in checking after goals</div><div class="alloc-sub">Stays on the card as cushion</div></div><div class="alloc-amount positive" style="font-size:20px">$${fmt(Math.max(0,avail))}</div></div>`
-      +`<div class="alloc-row" style="background:rgba(79,142,247,.06);border-radius:8px;padding:10px 12px;margin:8px 0;border:1px solid rgba(79,142,247,.2)"><div><div class="alloc-label" style="font-size:12px;color:var(--accent)">📌 Computed from this check only: money in minus bills still coming out. 18% debt costs more than savings earns — kill cards first, then stack cash.</div></div></div>`;
+      +`<div class="alloc-row" style="background:rgba(79,142,247,.06);border-radius:8px;padding:10px 12px;margin:8px 0;border:1px solid rgba(79,142,247,.2)"><div><div class="alloc-label" style="font-size:12px;color:var(--accent)">📌 Computed from this check only: money in minus bills still coming out. 18% debt costs more than savings earns — kill cards first, then stack cash. A goal turns green the moment a real transfer into that account lands in this pay period.</div></div></div>`;
   }
   el.innerHTML=html;
 }
@@ -1640,8 +1779,14 @@ function saveTransfer(){
   const fa=accounts.find(a=>a.id===fId);const ta=accounts.find(a=>a.id===tId);
   if(!fa||!ta)return showToast('Account not found');
   fa.balance-=amt;ta.balance+=amt;sv('accounts',accounts);
-  transfers.push({id:nextTrfId++,fromId:fId,toId:tId,amount:amt,date,notes});
+  // goalKey is stamped only when this transfer was started from a goal row, so
+  // the Safety Buffer and the Emergency Fund stay distinguishable even when both
+  // land in the same savings account. A manual transfer carries no goalKey.
+  const rec={id:nextTrfId++,fromId:fId,toId:tId,amount:amt,date,notes};
+  if(_pendingGoalKey) rec.goalKey=_pendingGoalKey;
+  transfers.push(rec);
   sv('transfers',transfers);sv('nextTrfId',nextTrfId);
+  _pendingGoalKey=null;
   closeModal('transfer-modal');renderAll();showToast('$'+fmt(amt)+' transferred — both balances updated');
 }
 function deleteTrf(id){
