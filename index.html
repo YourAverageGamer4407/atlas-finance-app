@@ -660,6 +660,45 @@
   </div>
 </div>
 
+<!-- ACCOUNT ACTIVITY MODAL -->
+<div class="modal-overlay" id="acc-history-modal">
+  <div class="modal" style="width:640px">
+    <h2 id="acc-history-title">Account Activity</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:16px" id="acc-history-sub">Everything in and out of this account</p>
+    <div class="grid-3" style="margin-bottom:16px">
+      <div class="card" style="padding:12px 14px">
+        <div class="card-title" style="font-size:11px">Money Out</div>
+        <div class="card-value text-danger" id="acc-history-out" style="font-size:20px">$0.00</div>
+      </div>
+      <div class="card" style="padding:12px 14px">
+        <div class="card-title" style="font-size:11px">Money In</div>
+        <div class="card-value text-green" id="acc-history-in" style="font-size:20px">$0.00</div>
+      </div>
+      <div class="card" style="padding:12px 14px">
+        <div class="card-title" style="font-size:11px">Net</div>
+        <div class="card-value" id="acc-history-net" style="font-size:20px">$0.00</div>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:14px">
+      <label>Show</label>
+      <select id="acc-history-range" onchange="renderAccountHistory(_accHistoryId)">
+        <option value="period">This pay period</option>
+        <option value="month">This month</option>
+        <option value="all">All time</option>
+      </select>
+    </div>
+    <div class="table-wrap" style="max-height:340px;overflow-y:auto">
+      <table>
+        <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th></tr></thead>
+        <tbody id="acc-history-table"></tbody>
+      </table>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('acc-history-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- CALCULATOR -->
 <button class="calc-fab" id="calc-fab" onclick="toggleCalc()" title="Open calculator"><span>🧮</span> Calculator</button>
 <div class="calc-panel" id="calc-panel">
@@ -1706,12 +1745,79 @@ function renderAccounts(){
         <div class="account-balance ${neg?'negative':'positive-bal'}">${neg?'−':''}$${fmt(Math.abs(a.balance))}</div>
         ${safeLine}
         <div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="openAccountHistory(${a.id})" title="See every transaction in and out of this account">History</button>
           ${(a.type==='Credit Card'||a.type==='Loan')?`<button class="btn btn-transfer btn-sm" onclick="quickPay(${a.id})">Pay This</button>`:''}
           <button class="btn btn-secondary btn-sm" onclick="openEditModal(${a.id})">Edit</button>
           <button class="btn btn-danger btn-sm" onclick="deleteAccount(${a.id})">Remove</button>
         </div>
       </div></div>`;
   }).join('')||'<p style="color:var(--muted)">No accounts yet</p>';
+  // If the activity panel is open, keep it current — a save, a transfer or a
+  // 30s sync pull can change this account's rows while the panel is up.
+  if(_accHistoryId && document.getElementById('acc-history-modal')?.classList.contains('open')){
+    renderAccountHistory(_accHistoryId);
+  }
+}
+
+// ACCOUNT ACTIVITY — one account's own ledger.
+// Transactions carry an accountId; a transfer touches TWO accounts (money leaves
+// fromId, money arrives at toId), so a transfer is shown from each side it
+// touches. Both legs are derived from the single stored transfer record, so the
+// two accounts can never disagree about the same movement.
+let _accHistoryId=0;
+function openAccountHistory(id){
+  const a=accounts.find(x=>x.id===id); if(!a) return;
+  _accHistoryId=id;
+  document.getElementById('acc-history-title').textContent=a.name+' — Activity';
+  document.getElementById('acc-history-modal').classList.add('open');
+  renderAccountHistory(id);
+}
+function accountHistoryRows(id, range){
+  // Transactions logged directly against this account.
+  const rows=transactions.filter(t=>t.accountId===id).map(t=>({
+    date:t.date, desc:t.desc||'Transaction', cat:t.category||'—',
+    out:t.type==='expense'?t.amount:0, in:t.type==='income'?t.amount:0
+  }));
+  // Transfers: the out-leg sits on fromId, the in-leg on toId.
+  transfers.forEach(tr=>{
+    if(tr.fromId===id) rows.push({date:tr.date,desc:(tr.notes||'Transfer out'),cat:'Transfer',out:tr.amount,in:0});
+    if(tr.toId===id)   rows.push({date:tr.date,desc:(tr.notes||'Transfer in'),cat:'Transfer',out:0,in:tr.amount});
+  });
+  const {start,end}=ppPeriodDates();
+  const mk=curMonth();
+  const iso=d=>d.toISOString().split('T')[0];
+  const pStart=iso(start), pEnd=iso(end);
+  const inRange=r=>{
+    if(range==='all') return true;
+    if(range==='month') return (r.date||'').startsWith(mk);
+    return (r.date||'')>=pStart && (r.date||'')<=pEnd;
+  };
+  return rows.filter(inRange).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+}
+function renderAccountHistory(id){
+  if(!id) return;
+  const range=document.getElementById('acc-history-range')?.value||'period';
+  const rows=accountHistoryRows(id,range);
+  const totalOut=rows.reduce((s,r)=>s+r.out,0);
+  const totalIn=rows.reduce((s,r)=>s+r.in,0);
+  const net=totalIn-totalOut;
+  const a=accounts.find(x=>x.id===id);
+  const sub=document.getElementById('acc-history-sub');
+  if(sub) sub.textContent=(a?a.name:'Account')+' · '+rows.length+' '+(rows.length===1?'entry':'entries')+
+    (range==='period'?(' · '+((payPeriod.check||'1')==='1'?'1st':'15th')+' paycheck period')
+      :range==='month'?(' · '+curMonth()):' · all time');
+  const so=document.getElementById('acc-history-out'); if(so) so.textContent='−$'+fmt(totalOut);
+  const si=document.getElementById('acc-history-in');  if(si) si.textContent='+$'+fmt(totalIn);
+  const sn=document.getElementById('acc-history-net');
+  if(sn){ sn.textContent=(net<0?'−':'')+'$'+fmt(Math.abs(net)); sn.className='card-value '+(net>=0?'text-green':'text-danger'); }
+  const tb=document.getElementById('acc-history-table');
+  if(tb) tb.innerHTML=rows.length
+    ?rows.map(r=>`<tr>
+      <td>${r.date}</td>
+      <td>${r.desc}</td>
+      <td><span class="badge ${r.cat==='Transfer'?'badge-purple':'badge-blue'}">${r.cat}</span></td>
+      <td class="${r.out?'text-danger':'text-green'}">${r.out?'−':'+'}$${fmt(r.out||r.in)}</td></tr>`).join('')
+    :'<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:24px">Nothing in or out of this account in this range</td></tr>';
 }
 
 // SPENDING
